@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dichroic Prism Cube — Seven Heavens Studio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; width: 100vw; height: 100vh; margin: 0; }
+  canvas { display: block; width: 100vw !important; height: 100vh !important; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+
+// Init RectAreaLight uniforms (must call before creating any RectAreaLights)
+RectAreaLightUniformsLib.init();
+
+// ─── RENDERER — responsive, fills viewport ───────────────────────────────────
+// Pixel budget: cap physical pixels so UHD / Retina screens don't kill perf.
+// Max 2560px on the longer axis — looks great on MacBook Pro and 4K monitors.
+const rawDpr = window.devicePixelRatio || 1;
+const maxPhysical = 2560;
+function calcDpr(w, h) {
+  const longest = Math.max(w, h);
+  return Math.min(rawDpr, maxPhysical / longest, 2);
+}
+let dpr = calcDpr(window.innerWidth, window.innerHeight);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.toneMapping = THREE.AgXToneMapping;   // r167+ — no hue shift on glass/metal highlights
+renderer.toneMappingExposure = 1.2;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.setPixelRatio(dpr);
+document.body.appendChild(renderer.domElement);
+
+// Canvas fills viewport, camera aspect matches
+function getSize() { return { w: window.innerWidth, h: window.innerHeight }; }
+let { w: W, h: H } = getSize();
+
+function onResize() {
+  ({ w: W, h: H } = getSize());
+  dpr = calcDpr(W, H);
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(W, H);
+  camera.aspect = W / H;
+  camera.updateProjectionMatrix();
+  fboRT.setSize(W * dpr, H * dpr);
+  cubeMat.uniforms.uRes.value.set(W * dpr, H * dpr);
+  cubeMat.uniforms.uAspect.value = W / H;
+}
+
+renderer.setSize(W, H);
+
+// FBO — scene rendered WITHOUT cube, passed as texture to dichroic glass shader
+const fboRT = new THREE.WebGLRenderTarget(W * dpr, H * dpr, {
+  minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat,
+});
+
+// ─── SCENE ───────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+// Medium grey-blue studio — brighter background means the FBO captures visible
+// content that the glass refracts. Cube faces show distorted mid-grey → reads
+// clearly as glass, lighter than the floor's shadow edges.
+scene.background = new THREE.Color(0x7a8090);
+// Fog fades floor edges into background — eliminates the visible ground plane edge
+scene.fog = new THREE.FogExp2(0x7a8090, 0.038);
+
+const camera = new THREE.PerspectiveCamera(78, W / H, 0.01, 1000);
+camera.position.set(0, 6.8, 8.5);
+camera.lookAt(0, 0.5, 0);  // Exactly the cube centre
+
+// ─── FLOOR — 18% grey ────────────────────────────────────────────────────────
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(500, 500),
+  new THREE.MeshStandardMaterial({ color: 0x767676, roughness: 0.95, metalness: 0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// (contact shadow removed — circular shadow looked wrong under a cube)
+
+// ─── LIGHTING ────────────────────────────────────────────────────────────────
+// KEY — focused penlight from lower-left (the main dispersion source)
+const key = new THREE.SpotLight(0xffffff, 28);
+key.position.set(-4.3, 0.55, -0.4);
+key.target.position.set(0, 0.5, 0);
+key.angle = 0.07; key.penumbra = 0.20; key.decay = 1.2;
+key.castShadow = true; key.shadow.mapSize.set(2048, 2048); key.shadow.bias = -0.001;
+scene.add(key, key.target);
+
+// BACKLIGHT — from behind-right. Illuminates the scene BEHIND the cube.
+// Since FBO captures this, the glass refracts a bright patch of light from
+// behind — giving the cube internal glow and making it read lighter than floor.
+const back = new THREE.SpotLight(0xd8e8ff, 24);
+back.position.set(3.0, 3.0, -5.5);
+back.target.position.set(0, 0.5, 0);
+back.angle = 0.70; back.penumbra = 0.85; back.decay = 1.1;
+scene.add(back, back.target);
+
+// RIM — cool blue, top edges of cube
+const rim = new THREE.SpotLight(0x6688ff, 6.0);
+rim.position.set(-1.5, 5.5, -3.0);
+rim.target.position.set(0, 0.5, 0);
+rim.angle = 0.50; rim.penumbra = 0.90;
+scene.add(rim, rim.target);
+
+// OVERHEAD FILL — large RectAreaLight, soft studio softbox feel
+// Wide surface area = even, gradient-free illumination across the floor
+// No hard shadows — just a gentle lift so 18% grey reads correctly
+const rectFill = new THREE.RectAreaLight(0xfff5ee, 6.0, 10, 10);
+rectFill.position.set(0, 6.5, 0.5);
+rectFill.lookAt(0, 0, 0.5);
+scene.add(rectFill);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+
+// ─── GROUND FOG LAYER ────────────────────────────────────────────────────────
+// A large plane just above the floor with a radial gradient shader.
+// Soft mist that hugs the ground — fades at edges, breathes slightly over time.
+const fogLayerMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime:    { value: 0 },
+    uOpacity: { value: 0.28 },
+    uColor:   { value: new THREE.Color(0xdde8f0) },  // Cool white-blue mist
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    uniform float uOpacity;
+    uniform vec3  uColor;
+    varying vec2  vUv;
+    void main() {
+      vec2  c    = vUv - 0.5;
+      float dist = length(c) * 2.0;
+      // Radial falloff — dense in centre, gone at edge
+      float fog  = (1.0 - smoothstep(0.15, 1.0, dist));
+      // Gentle breathing — mist feels alive
+      float breath = 0.88 + 0.12 * sin(uTime * 0.6);
+      float alpha = fog * uOpacity * breath;
+      gl_FragColor = vec4(uColor, alpha);
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.NormalBlending,
+  side: THREE.DoubleSide,
+});
+const fogLayerMesh = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), fogLayerMat);
+fogLayerMesh.rotation.x = -Math.PI / 2;
+fogLayerMesh.position.y = 0.018;
+scene.add(fogLayerMesh);
+
+// ─── PRISM GROUP ─────────────────────────────────────────────────────────────
+const prismGroup = new THREE.Group();
+scene.add(prismGroup);
+const CUBE_Y = 0.50;
+
+// ─── FBO DICHROIC GLASS SHADER ───────────────────────────────────────────────
+// Per-channel IOR refraction (R=1.14, G=1.18, B=1.23) — chromatic dispersion.
+// Dichroic thin-film iridescence on diagonal face.
+// Fresnel edge glow.
+const dichroicVert = `
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+  void main() {
+    vLocalPos = position;
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vViewNormal = normalize(normalMatrix * normal);
+    vViewDir = normalize(-mvPos.xyz);
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+const dichroicFrag = `
+  uniform sampler2D uScene;
+  uniform vec2      uRes;
+  uniform float     uIorR, uIorG, uIorB;
+  uniform float     uAb;
+  uniform float     uDich;
+  uniform float     uFresnel;
+  uniform float     uTime;
+  uniform float     uAspect; // W/H — corrects refraction offset for non-square viewports
+
+  varying vec3 vViewNormal;
+  varying vec3 vViewDir;
+  varying vec3 vLocalPos;
+
+  vec3 thinFilm(float cosT, float t) {
+    float p = 6.28318 * 2.5 * cosT + t * 0.35;
+    return vec3(0.5+0.5*cos(p), 0.5+0.5*cos(p-2.094), 0.5+0.5*cos(p+2.094));
+  }
+
+  void main() {
+    vec2 uv = gl_FragCoord.xy / uRes;
+    vec3 n  = normalize(vViewNormal);
+    vec3 e  = normalize(vViewDir);
+
+    // Dichroic diagonal face normal perturbation
+    float diagF = exp(-abs(vLocalPos.x + vLocalPos.y) * 7.0) * uDich;
+    vec3  dn    = normalize(mix(n, normalize(vec3(1.0, 1.0, 0.0)), diagF));
+
+    // Per-channel refraction (the core chromatic dispersion)
+    vec3 rR = refract(-e, dn, 1.0/uIorR);
+    vec3 rG = refract(-e, dn, 1.0/uIorG);
+    vec3 rB = refract(-e, dn, 1.0/uIorB);
+    if(length(rR)<0.001) rR = -e;
+    if(length(rG)<0.001) rG = -e;
+    if(length(rB)<0.001) rB = -e;
+
+    // Aspect-corrected UV offset: equal angular displacement → equal pixel displacement
+    // For portrait (uAspect<1): X UV offset scaled up by 1/aspect to match Y in pixels
+    vec2 abXY = vec2(uAb / uAspect, uAb);
+    float R = texture2D(uScene, clamp(uv + rR.xy * abXY, 0.001, 0.999)).r;
+    float G = texture2D(uScene, clamp(uv + rG.xy * abXY, 0.001, 0.999)).g;
+    float B = texture2D(uScene, clamp(uv + rB.xy * abXY, 0.001, 0.999)).b;
+    vec3 refracted = vec3(R, G, B);
+
+    // Fresnel
+    float cosT   = clamp(dot(e, n), 0.0, 1.0);
+    float fresnel = pow(1.0 - cosT, uFresnel);
+
+    // Thin-film iridescence on dichroic face
+    vec3 irid = thinFilm(cosT, uTime);
+
+    // Compose
+    vec3 col = refracted;
+    col = mix(col, col * irid * 1.6, diagF * 0.65);   // Dichroic tint
+    col += irid * diagF * fresnel * 0.75;               // Rainbow edge glow on dichroic face
+    col += fresnel * 0.55;                              // Clean Fresnel rim — defines glass silhouette
+
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const cubeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uScene:   { value: null },
+    uRes:     { value: new THREE.Vector2(W * dpr, H * dpr) },
+    uIorR:    { value: 1.14 },
+    uIorG:    { value: 1.18 },
+    uIorB:    { value: 1.23 },
+    uAb:      { value: 0.10 },
+    uDich:    { value: 0.70 },
+    uFresnel: { value: 2.0 },
+    uTime:    { value: 0 },
+    uAspect:  { value: W / H },
+  },
+  vertexShader: dichroicVert,
+  fragmentShader: dichroicFrag,
+  side: THREE.FrontSide,
+});
+
+const cubeMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), cubeMat);
+cubeMesh.position.y = CUBE_Y;
+cubeMesh.castShadow = true;
+prismGroup.add(cubeMesh);
+prismGroup.rotation.y = Math.PI / 4;
+
+// ─── SPECTRAL DISPERSION RAYS — CLOCK HAND ANIMATION ─────────────────────────
+// Each ray sweeps around the cube like a clock hand.
+// Speed ratios match a real clock (hour:minute:second = 1:12:144), sped up
+// so all three tempos are visible:
+//   HOUR   → 1 revolution per 12 min  (barely drifts — meditative)
+//   MINUTE → 1 revolution per 60 s    (steady, readable sweep)
+//   SECOND → 1 revolution per 5 s     (energetic spin)
+const TAU = Math.PI * 2;
+const ω_h = TAU / 720;   // hour   hand (rad/s)
+const ω_m = TAU / 60;    // minute hand (rad/s)
+const ω_s = TAU / 5;     // second hand (rad/s)
+
+const clockRays = [];   // { mesh, initY, omega }
+
+const VERT = `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
+const FRAG = `
+  uniform vec3 c1,c2; uniform float op; varying vec2 vUv;
+  void main(){
+    vec3 col=mix(c1,c2,pow(clamp(vUv.y,0.,1.),0.6));
+    float sx=exp(-pow((vUv.x-0.5)*4.8,2.0));
+    float sy=smoothstep(0.0,0.08,vUv.y)*smoothstep(1.0,0.36,vUv.y);
+    gl_FragColor=vec4(col,sx*sy*op);
+  }
+`;
+function mkMat(c1,c2,op){ return new THREE.ShaderMaterial({ uniforms:{c1:{value:new THREE.Color(c1)},c2:{value:new THREE.Color(c2)},op:{value:op}}, vertexShader:VERT, fragmentShader:FRAG, transparent:true, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide }); }
+
+function crossBeam(c1,c2,w,len,op){
+  const g=new THREE.PlaneGeometry(w,len,1,16); g.translate(0,len/2,0);
+  const grp=new THREE.Group();
+  grp.add(new THREE.Mesh(g.clone(),mkMat(c1,c2,op)));
+  const b2=new THREE.Mesh(g.clone(),mkMat(c1,c2,op*0.65)); b2.rotation.y=Math.PI/2; grp.add(b2);
+  return grp;
+}
+
+function elevRay(az,el,c1,c2,w,len,op,omega){
+  const b=crossBeam(c1,c2,w,len,op);
+  b.position.y=CUBE_Y;
+  b.rotation.order='YXZ';
+  b.rotation.y=THREE.MathUtils.degToRad(az);
+  b.rotation.x=-THREE.MathUtils.degToRad(el);
+  prismGroup.add(b);
+  clockRays.push({ mesh:b, initY:THREE.MathUtils.degToRad(az), omega, isElev:true, el });
+}
+
+function floorRay(az,c1,c2,w,len,op,omega){
+  const g=new THREE.PlaneGeometry(w,len,1,16); g.translate(0,len/2,0);
+  const grp=new THREE.Group();
+  grp.add(new THREE.Mesh(g,mkMat(c1,c2,op)));
+  grp.position.y=0.008;
+  grp.rotation.order='YXZ';
+  grp.rotation.y=THREE.MathUtils.degToRad(az);
+  grp.rotation.x=Math.PI/2;
+  prismGroup.add(grp);
+  clockRays.push({ mesh:grp, initY:THREE.MathUtils.degToRad(az), omega, isFloor:true });
+}
+
+// Lengths stepped down by golden ratio φ=1.618 from second hand
+// Second: 7.6 / Minute: 7.6÷φ≈4.7 / Hour: 4.7÷φ≈2.9
+floorRay(-101, 0x9900ff,0xff00ff, 0.72,2.9,0.88, ω_h);      // HOUR
+floorRay(-114, 0x1133ff,0x00aaff, 0.72,4.7,0.92, ω_m);     // MINUTE
+floorRay(216, 0x44ff88,0x00cc44, 0.40,7.6,0.62, ω_s);       // SECOND
+
+// (hour markers removed — can re-add when needed)
+
+// ─── FLOOR CAUSTICS ──────────────────────────────────────────────────────────
+[
+  {c:0x6600ff,i:5.5,d:3.2,x:-1.6,y:0.06,z:-0.4},
+  {c:0x0033ff,i:5.0,d:2.8,x:-1.1,y:0.06,z:-0.7},
+  {c:0x00aaff,i:3.5,d:2.4,x: 0.6,y:0.06,z:-1.0},
+  {c:0x00ff66,i:2.0,d:1.8,x: 0.8,y:0.06,z: 0.3},
+  {c:0xffee00,i:4.5,d:2.2,x: 0.8,y:0.06,z: 0.9},
+  {c:0xff8800,i:4.8,d:2.0,x: 0.4,y:0.06,z: 1.2},
+  {c:0xff2200,i:5.2,d:2.4,x:-0.1,y:0.06,z: 1.5},
+].forEach(({c,i,d,x,y,z})=>{ const pl=new THREE.PointLight(c,i,d); pl.position.set(x,y,z); scene.add(pl); });
+
+// Wire up resize handler (cubeMat is defined above)
+window.addEventListener('resize', onResize);
+
+// ─── ANIMATE ─────────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+
+// prismGroup fixed at 45° — cube corner faces camera, rays sweep independently
+prismGroup.rotation.y = Math.PI / 4;
+
+(function loop(){
+  requestAnimationFrame(loop);
+  const t = clock.getElapsedTime();
+  cubeMat.uniforms.uTime.value = t;
+  fogLayerMat.uniforms.uTime.value = t;
+
+  // Cube static at 45° — prismGroup.rotation.y = PI/4 set at init
+
+  // Clock hands — negative omega = clockwise when viewed from above
+  for (const r of clockRays) {
+    r.mesh.rotation.y = r.initY - t * r.omega;
+  }
+
+  // FBO pass: hide cube, render scene into texture
+  cubeMesh.visible = false;
+  renderer.setRenderTarget(fboRT);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  cubeMesh.visible = true;
+  cubeMat.uniforms.uScene.value = fboRT.texture;
+
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
