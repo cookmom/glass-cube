@@ -323,10 +323,10 @@ function floorRay(az,c1,c2,w,len,op,omega){
 }
 
 // Lengths stepped down by golden ratio φ=1.618 from second hand
-// Second: 7.6 / Minute: 7.6÷φ≈4.7 / Hour: 4.7÷φ≈2.9
-floorRay(-101, 0x9900ff,0xff00ff, 0.72,2.9,0.88, ω_h);      // HOUR
-floorRay(-114, 0x1133ff,0x00aaff, 0.72,4.7,0.92, ω_m);     // MINUTE
-floorRay(216, 0x44ff88,0x00cc44, 0.40,7.6,0.62, ω_s);       // SECOND
+// Second: 9.12 / Minute: 5.64 / Hour: 3.48  (×1.2 from original 7.6/4.7/2.9)
+floorRay(-101, 0x9900ff,0xff00ff, 0.72,3.48,0.88, ω_h);     // HOUR
+floorRay(-114, 0x1133ff,0x00aaff, 0.72,5.64,0.92, ω_m);     // MINUTE
+floorRay(216, 0x44ff88,0x00cc44, 0.40,9.12,0.62, ω_s);      // SECOND
 
 // (hour markers removed — can re-add when needed)
 
