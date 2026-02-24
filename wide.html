@@ -162,7 +162,7 @@ scene.add(fogLayerMesh);
 // ─── PRISM GROUP ─────────────────────────────────────────────────────────────
 const prismGroup = new THREE.Group();
 scene.add(prismGroup);
-const CUBE_Y = 0.50;
+const CUBE_Y = 0.60;
 
 // ─── FBO DICHROIC GLASS SHADER ───────────────────────────────────────────────
 // Per-channel IOR refraction (R=1.14, G=1.18, B=1.23) — chromatic dispersion.
@@ -260,7 +260,7 @@ const cubeMat = new THREE.ShaderMaterial({
   side: THREE.FrontSide,
 });
 
-const cubeMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), cubeMat);
+const cubeMesh = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), cubeMat);
 cubeMesh.position.y = CUBE_Y;
 cubeMesh.castShadow = true;
 prismGroup.add(cubeMesh);
